@@ -108,7 +108,13 @@ export async function getPublicKey(alias: string): Promise<{ publicKey: string }
 }
 
 export async function addAlias(alias: string, publicKey: string): Promise<void> {
-  await request('POST', '/addAlias', { alias, publicKey });
+  const res = await fetch(`${NODE_URL}/addAlias`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ alias, publicKey }),
+  });
+  if (res.status === 400) throw new Error('Alias already exists');
+  if (!res.ok) throw new Error(`Failed to add alias: ${res.status}`);
 }
 
 export async function submitTransaction(
