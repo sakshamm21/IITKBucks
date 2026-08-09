@@ -1,0 +1,33 @@
+# Node dependencies
+node_modules/
+
+# Private keys — NEVER commit these
+*.pem
+node_private.pem
+node_public.pem
+private.pem
+privateKey.pem
+private_pkcs8.pem
+public.pem
+publicKey.pem
+test.pem
+
+# Blockchain data (regenerate / sync from peers)
+blocks/*.dat
+
+# Build output
+web/dist/
+web/node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp

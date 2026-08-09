@@ -1,0 +1,6 @@
+{
+    "public-key": "./node_public.pem",
+    "myurl": "http://localhost:3000",
+    "potential_peers": [],
+    "port": 3000
+}
