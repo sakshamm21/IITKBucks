@@ -400,9 +400,8 @@ Blocks are stored as raw binary files in `blocks/N.dat`:
 
 This project began as a freshmen-year summer project under the **Programming Club, Science and Technology Council, IIT Kanpur** — a custom cryptocurrency built on a blockchain model, with contributions to its peer-to-peer networking, mining, and cryptography.
 
-- **Author:** Saksham (original summer project)
-- **Mentor:** [Priydarshi Singh](https://github.com/dryairship)
-- **Modern web wallet:** React + Vite + TypeScript + Tailwind CSS, built on top of the original node codebase.
+- **Author:** [sakshamm21](https://github.com/sakshamm21)
+- **Modern web wallet:** React + Vite + TypeScript + Tailwind CSS, built on top of the original node codebase by [Priydarshi Singh](https://github.com/dryairship)
 
 ---
 
