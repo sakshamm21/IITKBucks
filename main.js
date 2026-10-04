@@ -53,13 +53,35 @@ var peers = [];
 var alias = new Map();
 var unusedOuputsPubkey = new Map();
 var unused_outputs = new Map();
+// Aliases whose ownership was proven by a signature. Entries already in `alias` before
+// this node started were registered by an older build (no proof available) and stay
+// usable, but are never broadcast to peers as if they were verified.
+var verifiedAliases = new Set();
+var ALIAS_PATTERN = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+var MAX_PUBKEY_LEN = 4096;
+var ALIAS_CHALLENGE_PREFIX = 'IITKBUCKS-ALIAS:';
 let worker = new Worker('./worker.js');
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //util functions
+// Canonical key for a UTXO. txId is a 32-byte hex string (fixed width) and index is
+// an int32, so ':' cannot appear in either and the key is unambiguous. The previous
+// [txId, index].toString() form collided whenever a txId ended in digits followed by
+// the index (e.g. "ab1,5" vs "ab,15").
+function utxoKey(transactionId, index){
+    return transactionId + ':' + index;
+}
+
 function removeTransaction(array, elem) {
     _.remove(array, function(e) {
         return _.isEqual(e, elem);
     })
+}
+
+// Message an alias owner must sign to prove control of their key.
+// Domain-separated and length-prefixed with the alias so a signature harvested for
+// one alias name can never be replayed to claim a different one.
+function aliasChallenge(name){
+    return ALIAS_CHALLENGE_PREFIX + Buffer.byteLength(name, 'utf8') + ':' + name;
 }
 
 function getPrevHash(index){
@@ -265,9 +287,18 @@ function verify_transaction(trans , hashed_output){
     var flag = true;
     var transactionFees=BigInt(0);
     console.log("num of inputs :::::"+numInputs);
+    // Each UTXO may only be spent once per transaction. Without this, a transaction
+    // listing the same input twice would debit it twice while the signature check
+    // still passed on both copies, letting the sender pay out more than they own.
+    var seenInputs = new Set();
     for (var i = 0 ;i < numInputs ; i++)
     {
-        var tuple =[ inputs[i].transactionId, inputs[i].index ].toString();
+        var tuple = utxoKey(inputs[i].transactionId, inputs[i].index);
+        if(seenInputs.has(tuple)){
+            console.log(i+" duplicate input in same transaction");
+            return [false, 0];
+        }
+        seenInputs.add(tuple);
         if(unused_outputs.has(tuple))
             console.log(i+ " input present");
         else{
@@ -287,7 +318,7 @@ function verify_transaction(trans , hashed_output){
             
             var signature_buf = Buffer.concat([buf1,buf2,buf3]);
             signature = inputs[i].sign;
-            var pubkey =unused_outputs.get([ inputs[i].transactionId, inputs[i].index ].toString()).pub_key;
+            var pubkey =unused_outputs.get(utxoKey(inputs[i].transactionId, inputs[i].index)).pub_key;
             
             if(verify_signature(signature,signature_buf,pubkey)===true)
             {
@@ -305,7 +336,7 @@ function verify_transaction(trans , hashed_output){
         let output_coins = BigInt(0);
         for (var i = 0 ;i < numInputs ; i++)
         {
-           input_coins  +=  unused_outputs.get([ inputs[i].transactionId, inputs[i].index ].toString()).coins;
+           input_coins  +=  unused_outputs.get(utxoKey(inputs[i].transactionId, inputs[i].index)).coins;
         }
         for (var i = 0 ;i < numOutputs ; i++)
         {
@@ -372,7 +403,7 @@ function process(Block,blocknum){
 
         for (var j = 0 ;j < curr_transaction.numInputs ; j++)
         {
-            var tuple =[ curr_transaction.inputs[j].transactionId, curr_transaction.inputs[j].index ].toString();
+            var tuple = utxoKey(curr_transaction.inputs[j].transactionId, curr_transaction.inputs[j].index);
             if (unused_outputs.has(tuple))
             {
                 unused_outputs.delete(tuple);
@@ -381,16 +412,15 @@ function process(Block,blocknum){
 
         for(var k = 0 ;k < curr_transaction.numOutputs ; k++)
         {
-            var tuple =[ transaction_ID, k].toString();
+            var tuple = utxoKey(transaction_ID, k);
             unused_outputs.set(tuple, curr_transaction.outputs[k]);
         }
     }
     unusedOuputsPubkey.clear()
     for(let [key, value] of unused_outputs)
     {
-        var split = key.split(',')
-        split[1] = Number(split[1]);
-        let ob ={"transactionId":split[0],"index":split[1],'amount':value.coins.toString()}
+        var sep = key.indexOf(':');
+        let ob ={"transactionId":key.slice(0, sep),"index":Number(key.slice(sep+1)),'amount':value.coins.toString()}
         let normalizedKey = normalizePemKey(value.pub_key.toString('utf-8'));
         addValueToList(unusedOuputsPubkey, normalizedKey, ob);
     }
@@ -453,7 +483,9 @@ function verifyBlock(Block)
     var CoinBase_transaction_buf = block.slice(124 , 124 + CoinBase_transaction_size);
     transObj_hash = details(CoinBase_transaction_buf);
 
-    if(transObj_hash[0].outputs[0].coins <= transactionFees + blockReward)
+    // The miner credits exactly fees + blockReward, so anything else means the
+    // transaction fee was inflated (or the reward manipulated) and must be rejected.
+    if(transObj_hash[0].outputs[0].coins === transactionFees + blockReward)
     {
         console.log("COinbase verified too");
     }else{
@@ -582,21 +614,10 @@ function getPendingTransactions(url_){
         console.log(response.statusCode);
 
                 var penTransactions = JSON.parse(body);
-                console.log("number of pending transactions................."+penTransactions.length);
-                for ( txn in penTransactions)
-                {
-                    var flag =true;
-
-                    for (let x=0; x < pendingTransactions.length ; x++)
-                    {
-                        if (pendingTransactions[x] === penTransactions[txn]) 
-                        {
-                           console.log('already exists');
-                           flag = false;
-                        }
-                    }
-                    if(flag){
-                            var trans = penTransactions[txn]
+                                console.log("number of pending transactions................."+penTransactions.length);
+                                for ( txn in penTransactions)
+                                {
+                                            var trans = penTransactions[txn]
                             let inputs = trans.inputs;
                             let numInputs = inputs.length;
                             let outputs = trans.outputs;
@@ -616,14 +637,24 @@ function getPendingTransactions(url_){
                                 Outputs.push(out);
                             }
                             let transaction = new Transaction (numInputs, Inputs, numOutputs, Outputs);
-                            pendingTransactions.push(transaction);
-                            console.log(transaction);
-                    console.log('length of pending transaction is : '+pendingTransactions.length);
-                    }
-                    
-                }        
-      });
-}
+                                                        // Peers are untrusted: never adopt a transaction without
+                                                        // checking signatures and UTXO existence locally.
+                                                        var incoming = transactionToBuffer(transaction);
+                                                        var admitted = verify_transaction(transaction, incoming[1]);
+                                                        if(!admitted[0]){
+                                                            console.log('discarding invalid transaction from peer');
+                                                            continue;
+                                                        }
+                                                        if(pendingTransactions.some(function(p){ return _.isEqual(p, transaction); })){
+                                                            console.log('already pending, discarding duplicate from peer');
+                                                            continue;
+                                                        }
+                                                        pendingTransactions.push(transaction);
+                                                                                                                                                                        console.log(transaction);
+                                                                                                                                    console.log('length of pending transaction is : '+pendingTransactions.length);
+                                                                                                                                }
+                                                              });
+                                                        }
 
 function transactionToBuffer(transaction){
     console.log("inside tranaction to buffer")
@@ -666,7 +697,7 @@ function makeBlock(worker){
                 console.log('*******************tranaction verified')
               for (var j = 0 ;j < pendingTransactions[i].numInputs ; j++)
                 {
-                    var tuple =[ pendingTransactions[i].inputs[j].transactionId, pendingTransactions[i].inputs[j].index ].toString();
+                    var tuple = utxoKey(pendingTransactions[i].inputs[j].transactionId, pendingTransactions[i].inputs[j].index);
         
                     if(unused_outputs.has(tuple))
                     {
@@ -755,7 +786,7 @@ function sendtoPeers(block){
          }
 }
 
-function sendAliasToPeers(_alias,publicKey){
+function sendAliasToPeers(_alias,publicKey,signature){
     var i;
         for (i = 0; i < peers.length; i++) 
         { 
@@ -765,7 +796,10 @@ function sendAliasToPeers(_alias,publicKey){
                 url:peers[i]+'/addAlias',
                 json: {
                   "alias":_alias,
-                  "publicKey":publicKey
+                  "publicKey":publicKey,
+                  // Forwarded so each peer can independently verify ownership of the
+                  // name; a peer never has to take this node's word for it.
+                  "signature":signature
                     },
                 headers: {
                     'Content-Type': 'application/json'
@@ -929,12 +963,24 @@ app.post('/newTransaction',(req,res,next)=>{
                                 Outputs.push(out);
          }
         let transaction = new Transaction (numInputs, Inputs, numOutputs, Outputs);
-          
-        if (!_.find(pendingTransactions, transaction)){
-                            console.log(transaction);
-                            pendingTransactions.push(transaction);
-                            console.log("transaction added");
-        }
+
+                // Verify before admission, not just at mining time. Without this the mempool
+                // accepts transactions with forged signatures or references to UTXOs that do
+                // not exist; they only got caught later (and only while they fit the block
+                // size budget), so an invalid tx could sit in the pool indefinitely.
+                var encoded = transactionToBuffer(transaction);
+                var admission = verify_transaction(transaction, encoded[1]);
+                if(!admission[0]){
+                    console.log('rejected invalid transaction at admission');
+                    res.sendStatus(400);
+                    return;
+                }
+
+                if (!pendingTransactions.some(existing => _.isEqual(existing, transaction))){
+                    console.log(transaction);
+                    pendingTransactions.push(transaction);
+                    console.log("transaction added");
+                }
         else{
             console.log('txn already present');
         }
@@ -946,13 +992,37 @@ app.post('/newTransaction',(req,res,next)=>{
 
 app.post('/addAlias',(req,res,next)=>{
     console.log('adding alias endpoint');
-    if(alias.has(req.body.alias)){
+    let requestedAlias = req.body.alias;
+    let claimedKey = req.body.publicKey;
+
+    if(typeof requestedAlias !== 'string' || !ALIAS_PATTERN.test(requestedAlias)){
         res.sendStatus(400);
-    }else{
-        alias.set(req.body.alias , normalizePemKey(req.body.publicKey));
-        sendAliasToPeers(req.body.alias , req.body.publicKey);
-        res.sendStatus(200);
+        return;
     }
+    if(alias.has(requestedAlias)){
+        res.sendStatus(400);
+        return;
+    }
+    if(typeof claimedKey !== 'string' || claimedKey.length === 0 || claimedKey.length > MAX_PUBKEY_LEN){
+        res.sendStatus(400);
+        return;
+    }
+
+    // Claiming a name must be backed by the private key behind it, otherwise anyone
+    // can reserve a well-known alias (e.g. "satoshi") before its rightful owner and
+    // silently collect funds sent to that name.
+    var normalizedKey = normalizePemKey(claimedKey);
+    var proof = req.body.signature;
+    if(typeof proof !== 'string' || !verify_signature(proof, aliasChallenge(requestedAlias), normalizedKey)){
+        console.log('alias claim rejected: invalid ownership proof for ' + requestedAlias);
+        res.sendStatus(403);
+        return;
+    }
+
+    alias.set(requestedAlias , normalizedKey);
+    verifiedAliases.add(requestedAlias);
+    sendAliasToPeers(requestedAlias , claimedKey, proof);
+    res.sendStatus(200);
 });
 
 app.post('/getPublicKey',(req,res,next)=>{
