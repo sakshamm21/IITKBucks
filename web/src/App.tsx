@@ -45,15 +45,15 @@ export default function App() {
               </span>
             )}
                         <NavLink
-                          to="/account"
-                          className="chip transition-colors hover:border-iris-400/40 hover:text-white"
-                          title={apiKey ? 'API key active' : 'Create an API key'}
-                        >
-                          <KeyRound size={12} />
-                          <span className="hidden sm:inline">
-                            {apiKey ? 'Key active' : 'No key'}
-                          </span>
-                        </NavLink>
+                                      to="/account"
+                                      className="chip transition-colors hover:border-iris-400/40 hover:text-white"
+                                      title={apiKey ? 'API key active' : 'Create an API key'}
+                                    >
+                                      <KeyRound size={12} />
+                                      <span className="hidden sm:inline">
+                                        {apiKey ? 'Key active' : 'No key'}
+                                      </span>
+                                    </NavLink>
           </div>
         </div>
 
