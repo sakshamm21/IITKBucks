@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useWallet } from '../lib/useWallet';
 import { Card, SectionTitle, ErrorState, Badge, EmptyState } from '../components/ui';
 import { isValidAlias } from '../lib/format';
-import { AtSign, ShieldCheck, Users, KeyRound, Search } from 'lucide-react';
+import { AtSign, ShieldCheck, Users, KeyRound, Search, AlertTriangle } from 'lucide-react';
 
 export default function Identity() {
   const { wallet, claimAlias, resolveAlias } = useWallet();
@@ -13,6 +13,26 @@ export default function Identity() {
   const [lookup, setLookup] = useState('');
   const [lookupResult, setLookupResult] = useState<string | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
+    const [aliasStale, setAliasStale] = useState(false);
+
+    /**
+     * The wallet remembers its alias locally, but the node owns the real mapping. If the
+     * node restarted before aliases were persisted, the saved alias no longer resolves,
+     * so surface that instead of showing a name that cannot receive funds.
+     */
+    useEffect(() => {
+      let cancelled = false;
+      if (!wallet?.alias) {
+        setAliasStale(false);
+        return;
+      }
+      resolveAlias(wallet.alias)
+        .then(() => !cancelled && setAliasStale(false))
+        .catch(() => !cancelled && setAliasStale(true));
+      return () => {
+        cancelled = true;
+      };
+    }, [wallet?.alias, resolveAlias]);
 
   if (!wallet) {
     return (
@@ -32,7 +52,21 @@ export default function Identity() {
 
   const valid = isValidAlias(alias.trim());
 
-  async function handleClaim() {
+    async function reclaim() {
+      if (!wallet?.alias) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await claimAlias(wallet.alias);
+        setAliasStale(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not re-claim that alias.');
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function handleClaim() {
     if (!valid) return;
     setBusy(true);
     setError(null);
@@ -68,25 +102,43 @@ export default function Identity() {
         />
 
         {wallet.alias ? (
-          <EmptyState
-            icon={<AtSign size={40} />}
-            title={`You are @${wallet.alias}`}
-            description="This name is bound to your key. People can send KBX to it, and the node verifies the binding with your signature."
-          />
-        ) : (
-          <div className="space-y-5">
-            <div className="flex items-start gap-4 rounded-2xl border border-iris-500/20 bg-iris-500/[0.07] p-5">
-              <ShieldCheck size={19} className="mt-0.5 shrink-0 text-iris-300" />
-              <p className="text-sm leading-relaxed text-white/60">
-                Claiming requires signing a challenge with your private key. That proof is
-                what stops anyone from reserving your name first and quietly receiving
-                funds sent to it.
-              </p>
-            </div>
+                  <div className="space-y-4">
+                    {aliasStale && (
+                      <div className="flex items-start gap-4 rounded-2xl border border-amber-500/25 bg-amber-500/[0.07] p-5">
+                        <AlertTriangle size={19} className="mt-0.5 shrink-0 text-amber-300" />
+                        <div>
+                          <p className="text-sm font-medium text-amber-200">
+                            The node no longer recognises @{wallet.alias}
+                          </p>
+                          <p className="mt-1.5 text-sm leading-relaxed text-white/55">
+                            Re-claim it to register the name and its key on this node again.
+                          </p>
+                          <button onClick={reclaim} disabled={busy} className="btn-secondary mt-3 !py-2 !text-xs">
+                            {busy ? 'Signing…' : `Re-claim @${wallet.alias}`}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <EmptyState
+                      icon={<AtSign size={40} />}
+                      title={`You are @${wallet.alias}`}
+                      description="This name is bound to your key. People can send KBX to it, and the node verifies the binding with your signature."
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-5">
+                    <div className="flex items-start gap-4 rounded-2xl border border-iris-500/20 bg-iris-500/[0.07] p-5">
+                      <ShieldCheck size={19} className="mt-0.5 shrink-0 text-iris-300" />
+                      <p className="text-sm leading-relaxed text-white/60">
+                        Claiming requires signing a challenge with your private key. That proof is
+                        what stops anyone from reserving your name first and quietly receiving
+                        funds sent to it.
+                      </p>
+                    </div>
 
-            {error && <ErrorState message={error} />}
+                    {error && <ErrorState message={error} />}
 
-            <div>
+                    <div>
               <label htmlFor="alias" className="eyebrow mb-2 block">
                 Choose an alias
               </label>

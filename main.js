@@ -60,6 +60,9 @@ var verifiedAliases = new Set();
 var ALIAS_PATTERN = /^[a-z0-9][a-z0-9._-]{2,31}$/;
 var MAX_PUBKEY_LEN = 4096;
 var ALIAS_CHALLENGE_PREFIX = 'IITKBUCKS-ALIAS:';
+// Aliases are part of chain state, not session state: they map names to public keys
+// that hold real coins, so losing them on restart would orphan funds.
+var ALIAS_STORE = './blocks/aliases.json';
 let worker = new Worker('./worker.js');
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //util functions
@@ -82,6 +85,40 @@ function removeTransaction(array, elem) {
 // one alias name can never be replayed to claim a different one.
 function aliasChallenge(name){
     return ALIAS_CHALLENGE_PREFIX + Buffer.byteLength(name, 'utf8') + ':' + name;
+}
+
+// Writes aliases atomically (temp file then rename) so a crash mid-write cannot leave
+// a truncated JSON file that would drop every registered alias on the next boot.
+function persistAliases(){
+    var payload = {};
+    for (let [name, key] of alias) {
+        payload[name] = { publicKey: key, verified: verifiedAliases.has(name) };
+    }
+    var tmp = ALIAS_STORE + '.tmp';
+    try {
+        fs.writeFileSync(tmp, JSON.stringify(payload, null, 2));
+        fs.renameSync(tmp, ALIAS_STORE);
+    } catch (err) {
+        console.log('could not persist aliases: ' + err.message);
+    }
+}
+
+function loadAliases(){
+    if(!fs.existsSync(ALIAS_STORE)) return;
+    try {
+        var raw = fs.readFileSync(ALIAS_STORE, 'utf8').replace(/^\uFEFF/, '');
+        var parsed = JSON.parse(raw);
+        for (let name of Object.keys(parsed)) {
+            var entry = parsed[name];
+            var key = typeof entry === 'string' ? entry : entry.publicKey;
+            if (typeof key !== 'string' || !ALIAS_PATTERN.test(name)) continue;
+            alias.set(name, normalizePemKey(key));
+            if (entry && entry.verified) verifiedAliases.add(name);
+        }
+        console.log('restored ' + alias.size + ' alias(es) from disk');
+    } catch (err) {
+        console.log('could not read alias store: ' + err.message);
+    }
 }
 
 function getPrevHash(index){
@@ -1024,8 +1061,9 @@ app.post('/addAlias',(req,res,next)=>{
 
     alias.set(requestedAlias , normalizedKey);
     verifiedAliases.add(requestedAlias);
-    sendAliasToPeers(requestedAlias , claimedKey, proof);
-    res.sendStatus(200);
+        persistAliases();
+        sendAliasToPeers(requestedAlias , claimedKey, proof);
+        res.sendStatus(200);
 });
 
 app.post('/getPublicKey',(req,res,next)=>{
@@ -1106,8 +1144,9 @@ app.listen(port,async function(error){
         console.log("this thing is fucked")
     }else{
 
-       await start();
-       getBlocks(0);
-       console.log('server listening on port '+port)
+       loadAliases();
+              await start();
+              getBlocks(0);
+              console.log('server listening on port '+port)
     }
 });
