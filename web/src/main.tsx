@@ -1,13 +1,33 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import App from './App';
+import { WalletProvider } from './lib/useWallet';
+import Dashboard from './pages/Dashboard';
+import WalletPage from './pages/Wallet';
+import Transfer from './pages/Transfer';
+import Mine from './pages/Mine';
+import Identity from './pages/Identity';
+import Explorer from './pages/Explorer';
+import NotFound from './pages/NotFound';
 import './index.css';
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
     <BrowserRouter>
-      <App />
+      <WalletProvider>
+        <Routes>
+          <Route element={<App />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/wallet" element={<WalletPage />} />
+            <Route path="/transfer" element={<Transfer />} />
+            <Route path="/mine" element={<Mine />} />
+            <Route path="/identity" element={<Identity />} />
+            <Route path="/explorer" element={<Explorer />} />
+            <Route path="*" element={<NotFound />} />
+          </Route>
+        </Routes>
+      </WalletProvider>
     </BrowserRouter>
-  </React.StrictMode>
+  </StrictMode>
 );

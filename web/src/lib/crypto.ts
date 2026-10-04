@@ -182,6 +182,38 @@ export async function hashOutputBuffer(outputBuffer: ArrayBuffer): Promise<strin
   return bytesToHex(new Uint8Array(hash));
 }
 
+// --- Alias ownership proof ---
+
+/**
+ * Build the exact bytes a node expects signed when claiming an alias.
+ * Must stay in lockstep with aliasChallenge() in the backend:
+ *   "IITKBUCKS-ALIAS:" + utf8ByteLength(name) + ":" + name
+ * The length prefix binds the proof to this one name, so a signature
+ * harvested for one alias cannot be replayed to claim another.
+ */
+export function aliasChallenge(name: string): Uint8Array {
+  return new TextEncoder().encode(`IITKBUCKS-ALIAS:${new TextEncoder().encode(name).length}:${name}`);
+}
+
+/**
+ * Sign an alias claim with the wallet's private key.
+ * Returns a hex RSA-PSS/SHA-256 (saltLength 32) signature.
+ */
+export async function signAliasClaim(
+  privateKeyPem: string,
+  alias: string
+): Promise<string> {
+  const key = await importPrivateKey(privateKeyPem);
+  const signature = await crypto.subtle.sign(
+    { name: 'RSA-PSS', saltLength: 32 },
+    key,
+    // Copy into a plain ArrayBuffer: TextEncoder returns a view whose buffer type
+    // is ArrayBufferLike, which the WebCrypto BufferSource signature rejects.
+    aliasChallenge(alias).slice().buffer as ArrayBuffer
+  );
+  return bytesToHex(new Uint8Array(signature));
+}
+
 // --- Utility functions ---
 
 export function hexToBytes(hex: string): Uint8Array {

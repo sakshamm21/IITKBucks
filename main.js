@@ -590,8 +590,11 @@ function getBlocks(blocknum){
             }
 
             process(body , blocknum);
-            block_index++;  
-            getBlocks(blocknum+1);}
+                        // block_index is the height, i.e. the index the NEXT block will use.
+                        // The increment below over-shot by one, so the reported height pointed
+                        // at a block that does not exist yet (blockIndex 20 with files 0..19).
+                        block_index = blocknum + 1;
+                        getBlocks(blocknum+1);}
         else if(response.statusCode==404){
               console.log('end reached');
         }else{

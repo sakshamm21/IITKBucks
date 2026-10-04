@@ -3,28 +3,129 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   body {
-    @apply min-h-screen;
+    @apply bg-void text-white/90 font-sans;
+    /* Ambient violet bloom so the dark surface has depth rather than flat black. */
+    background-image:
+      radial-gradient(60rem 40rem at 12% -8%, rgba(124, 58, 237, 0.16), transparent 60%),
+      radial-gradient(48rem 34rem at 92% 4%, rgba(16, 185, 129, 0.09), transparent 62%);
+    background-attachment: fixed;
+  }
+
+  /* Visible, on-brand focus ring for keyboard users. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-iris-400 ring-offset-2 ring-offset-void;
+  }
+
+  ::selection {
+    @apply bg-iris-500/40 text-white;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-white/10;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-white/20;
+  }
+
+  /* Respect users who ask for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
 @layer components {
+  /* Frosted panel — the core surface used by every card. */
+  .surface {
+    @apply rounded-card border border-white/[0.07] bg-void-100/70 shadow-card backdrop-blur-xl;
+  }
+
+  .surface-raised {
+    @apply surface transition-all duration-300 hover:border-white/[0.12] hover:shadow-lift;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-pill px-5 py-3
+           text-sm font-semibold transition-all duration-200
+           disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
   .btn-primary {
-    @apply bg-primary-600 hover:bg-primary-700 text-white font-medium py-2.5 px-5 rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply btn bg-iris-600 text-white shadow-lift hover:bg-iris-500 active:scale-[0.97];
   }
+
   .btn-secondary {
-    @apply bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2.5 px-5 rounded-lg transition-colors duration-200;
+    @apply btn border border-white/10 bg-white/[0.04] text-white/90
+           hover:border-white/20 hover:bg-white/[0.08] active:scale-[0.97];
   }
+
+  .btn-ghost {
+    @apply btn text-white/60 hover:bg-white/[0.06] hover:text-white;
+  }
+
   .btn-danger {
-    @apply bg-red-600 hover:bg-red-700 text-white font-medium py-2.5 px-5 rounded-lg transition-colors duration-200;
+    @apply btn bg-coral-600 text-white hover:bg-coral-500 active:scale-[0.97];
   }
-  .card {
-    @apply bg-white rounded-xl shadow-sm border border-gray-100 p-6;
+
+  /* Small uppercase label used above values and section headers. */
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40;
   }
-  .input-field {
-    @apply w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all duration-200;
+
+  .input {
+    @apply w-full rounded-2xl border border-white/10 bg-void-50/60 px-4 py-3
+           font-mono text-sm text-white placeholder-white/25
+           transition-colors focus:border-iris-400/60 focus:outline-none focus:ring-1 focus:ring-iris-400/40;
   }
-  .label {
-    @apply block text-sm font-medium text-gray-700 mb-1.5;
+
+  .skeleton {
+    @apply rounded-lg bg-gradient-to-r from-white/[0.04] via-white/[0.09] to-white/[0.04]
+           bg-[length:1000px_100%] animate-shimmer;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-pill border border-white/10
+           bg-white/[0.04] px-3 py-1 text-xs font-medium text-white/70;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-br from-white via-white to-white/55 bg-clip-text text-transparent;
+  }
+
+  .text-gradient-iris {
+    @apply bg-gradient-to-br from-iris-300 via-iris-400 to-mint-400 bg-clip-text text-transparent;
+  }
+
+  /* Tabular numerals keep balances from jittering as digits change. */
+  .nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
   }
 }

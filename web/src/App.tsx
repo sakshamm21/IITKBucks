@@ -1,75 +1,85 @@
-import { Routes, Route, NavLink } from 'react-router-dom';
-import Dashboard from './pages/Dashboard';
-import Wallet from './pages/Wallet';
-import Aliases from './pages/Aliases';
-import Transfer from './pages/Transfer';
-import Explorer from './pages/Explorer';
+import { NavLink, Outlet } from 'react-router-dom';
+import { useWallet } from './lib/useWallet';
+import { useNodeStatus } from './lib/useNodeStatus';
+import { StatusDot } from './components/ui';
+import { LayoutDashboard, Wallet, Send, Pickaxe, AtSign, Blocks } from 'lucide-react';
+import { formatCompact } from './lib/format';
 
-const navItems = [
-  { to: '/', label: 'Dashboard', icon: '◈' },
-  { to: '/wallet', label: 'Wallet', icon: '⛁' },
-  { to: '/aliases', label: 'Aliases', icon: '◎' },
-  { to: '/transfer', label: 'Transfer', icon: '↗' },
-  { to: '/explorer', label: 'Explorer', icon: '⊞' },
+const NAV = [
+  { to: '/', label: 'Home', icon: LayoutDashboard, end: true },
+  { to: '/wallet', label: 'Wallet', icon: Wallet },
+  { to: '/transfer', label: 'Send', icon: Send },
+  { to: '/mine', label: 'Mine', icon: Pickaxe },
+  { to: '/identity', label: 'Identity', icon: AtSign },
+  { to: '/explorer', label: 'Explorer', icon: Blocks },
 ];
 
 export default function App() {
+  const { wallet, balance } = useWallet();
+  const { live, info } = useNodeStatus();
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 bg-primary-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
-                I
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">IITkBucks</h1>
-                <p className="text-xs text-gray-500">Blockchain Wallet</p>
-              </div>
-            </div>
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-void/70 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-4">
+          <NavLink to="/" className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-iris-500 to-iris-700 text-sm font-bold text-white shadow-glow">
+              ₿
+            </span>
+            <span className="font-display text-lg font-semibold tracking-tight text-white">
+              IITkBucks
+            </span>
+          </NavLink>
+
+          <div className="flex items-center gap-3">
+            <span className="chip hidden sm:inline-flex">
+              <StatusDot live={live} />
+              {live ? `height ${info?.blockIndex ?? 0}` : 'offline'}
+            </span>
+            {wallet && (
+              <span className="chip !border-mint-500/25 !bg-mint-500/10 !text-mint-300">
+                {formatCompact(balance)} KBX
+              </span>
+            )}
           </div>
         </div>
+
+        {/* Horizontal nav — works well on mobile without a hamburger. */}
+        <nav className="mx-auto max-w-6xl px-3 pb-2">
+          <div className="no-scrollbar flex gap-1 overflow-x-auto">
+            {NAV.map(({ to, label, icon: Icon, end }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={end}
+                className={({ isActive }) =>
+                  `flex shrink-0 items-center gap-2 rounded-pill px-3.5 py-2 text-sm font-medium transition-colors ${
+                    isActive
+                      ? 'bg-iris-500/15 text-iris-200'
+                      : 'text-white/45 hover:bg-white/[0.05] hover:text-white/80'
+                  }`
+                }
+              >
+                <Icon size={15} />
+                {label}
+              </NavLink>
+            ))}
+          </div>
+        </nav>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        <div className="flex flex-col lg:flex-row gap-6">
-          {/* Sidebar */}
-          <nav className="lg:w-56 shrink-0">
-            <div className="flex lg:flex-col gap-1 overflow-x-auto pb-2 lg:pb-0">
-              {navItems.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.to === '/'}
-                  className={({ isActive }) =>
-                    `flex items-center gap-2.5 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
-                      isActive
-                        ? 'bg-primary-50 text-primary-700'
-                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                    }`
-                  }
-                >
-                  <span className="text-lg">{item.icon}</span>
-                  {item.label}
-                </NavLink>
-              ))}
-            </div>
-          </nav>
+      <main className="mx-auto max-w-6xl px-5 py-7">
+        <Outlet />
+      </main>
 
-          {/* Main Content */}
-          <main className="flex-1 min-w-0">
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/wallet" element={<Wallet />} />
-              <Route path="/aliases" element={<Aliases />} />
-              <Route path="/transfer" element={<Transfer />} />
-              <Route path="/explorer" element={<Explorer />} />
-            </Routes>
-          </main>
+      <footer className="mx-auto max-w-6xl px-5 pb-8">
+        <div className="flex flex-col gap-2 border-t border-white/[0.06] pt-5 text-xs text-white/30 sm:flex-row sm:items-center sm:justify-between">
+          <p>
+            Educational proof-of-work blockchain. Not security-audited — do not use real value.
+          </p>
+          <p className="font-mono">RSA-PSS · SHA-256 · UTXO</p>
         </div>
-      </div>
+      </footer>
     </div>
   );
 }

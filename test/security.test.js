@@ -161,6 +161,28 @@ test('node reports chain info', async () => {
   assert.ok(Array.isArray(info.aliases));
 });
 
+/**
+ * blockIndex is the height, meaning the index the next block will use. The last
+ * block actually on disk is therefore blockIndex - 1, and blockIndex itself must not
+ * resolve. This regressed once: the replay loop incremented past the final block, so
+ * the node advertised a height whose block did not exist and the explorer 404'd.
+ */
+test('reported height matches the last block that exists', async () => {
+  const res = await get('/getNodeInfo');
+  const info = await res.json();
+  if (info.blockIndex === 0) return; // empty chain
+
+  const tipRes = await get(`/getBlock/${info.blockIndex - 1}`);
+  assert.strictEqual(tipRes.status, 200, `block ${info.blockIndex - 1} should exist`);
+
+  const nextRes = await get(`/getBlock/${info.blockIndex}`);
+  assert.notStrictEqual(
+    nextRes.status,
+    200,
+    `block ${info.blockIndex} is not mined yet and must not be served`
+  );
+});
+
 test('cors is not a wildcard when an allowlist is configured', async () => {
   const res = await get('/getNodeInfo', { headers: { Origin: 'https://evil.example' } });
   const allow = res.headers.get('access-control-allow-origin');
