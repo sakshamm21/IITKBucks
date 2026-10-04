@@ -176,10 +176,21 @@ export default function WalletPage() {
       <Card>
         <SectionTitle eyebrow="On chain" title="Your unspent outputs" />
         {utxos.length === 0 ? (
-          <p className="py-6 text-center text-sm text-white/40">
-            Nothing spendable yet. Mine a block to earn the first reward.
-          </p>
-        ) : (
+                <div className="py-6 text-center">
+                  <p className="text-sm text-white/40">
+                    Nothing spendable yet. Mining pays the node rather than your wallet, so
+                    draw demo funds to try a transfer straight away.
+                  </p>
+                  <div className="mt-4 flex flex-wrap justify-center gap-3">
+                    <Link to="/account" className="btn-primary">
+                      Get demo funds
+                    </Link>
+                    <Link to="/mine" className="btn-secondary">
+                      Mine a block
+                    </Link>
+                  </div>
+                </div>
+              ) : (
           <div className="space-y-2">
             {utxos.map((u) => (
               <div

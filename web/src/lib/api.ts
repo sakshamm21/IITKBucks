@@ -15,7 +15,8 @@ const NODE_URL: string = (import.meta.env.VITE_API_URL as string | undefined)?.r
 export class ApiError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly status: number,
+    readonly code?: string
   ) {
     super(message);
     this.name = 'ApiError';
@@ -24,6 +25,58 @@ export class ApiError extends Error {
   /** True when the node could not be reached at all. */
   get isNetworkError(): boolean {
     return this.status === 0;
+  }
+
+  /** True when the caller needs to create or re-enter an API key. */
+  get needsAuth(): boolean {
+    return this.status === 401;
+  }
+}
+
+const API_KEY_STORAGE = 'iitkbucks.apikey.v1';
+
+export function loadApiKey(): string | null {
+  try {
+    return localStorage.getItem(API_KEY_STORAGE);
+  } catch {
+    return null;
+  }
+}
+
+export function saveApiKey(key: string): void {
+  try {
+    localStorage.setItem(API_KEY_STORAGE, key);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+export function clearApiKey(): void {
+  try {
+    localStorage.removeItem(API_KEY_STORAGE);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Create an API key on the node. The token is returned exactly once. */
+export async function signUp(): Promise<string> {
+  const res = await request<{ apiKey: string }>('POST', '/signup', {});
+  saveApiKey(res.apiKey);
+  return res.apiKey;
+}
+
+/** Confirm the stored key is still recognised by the node. */
+export async function verifyApiKey(key: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${NODE_URL}/verifyKey`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: '{}',
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -35,8 +88,11 @@ async function request<T>(
 ): Promise<T> {
   const opts: RequestInit = { method, headers: {} as Record<string, string> };
 
+  const key = loadApiKey();
+  if (key) (opts.headers as Record<string, string>).Authorization = `Bearer ${key}`;
+
   if (body !== undefined && !isBinary) {
-    opts.headers = { 'Content-Type': 'application/json' };
+    opts.headers = { ...(opts.headers as Record<string, string>), 'Content-Type': 'application/json' };
     opts.body = JSON.stringify(body);
   } else if (body !== undefined && isBinary) {
     opts.body = body as BodyInit;
@@ -53,7 +109,16 @@ async function request<T>(
   }
 
   if (!res.ok) {
-    throw new ApiError(`${method} ${path} failed (${res.status})`, res.status);
+    let code: string | undefined;
+    let message = `${method} ${path} failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.error) code = body.error;
+      if (body?.message) message = body.message;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(message, res.status, code);
   }
 
   if (isBinary) return res.arrayBuffer() as unknown as T;
@@ -91,6 +156,9 @@ export interface NodeInfo {
   blockIndex: number;
   pendingTransactions: number;
   aliases: string[];
+  /** Present on hardened nodes; absent on older builds. */
+  apiKeys?: number;
+  requiresAuth?: boolean;
 }
 
 export interface PendingTransaction {
@@ -171,6 +239,18 @@ export async function getBlock(index: number): Promise<ArrayBuffer> {
 
 export async function triggerMine(): Promise<void> {
   await request('GET', '/make');
+}
+
+/**
+ * Claim demo funds for a public key. Requires an API key and is capped per wallet by
+ * the node. Returns the amount granted.
+ */
+export async function requestFaucet(publicKey: string): Promise<{
+  granted: string;
+  total: string;
+  limit: string;
+}> {
+  return request('POST', '/faucet', { publicKey });
 }
 
 export async function getPeers(): Promise<{ peers: string[] }> {

@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useWallet } from '../lib/useWallet';
 import { useNodeStatus } from '../lib/useNodeStatus';
 import { Card, SectionTitle, ErrorState, Badge } from '../components/ui';
-import { triggerMine } from '../lib/api';
-import { Pickaxe, Cpu, Clock, Info } from 'lucide-react';
+import { triggerMine, ApiError } from '../lib/api';
+import { Pickaxe, Cpu, Clock, Info, KeyRound } from 'lucide-react';
 
 const BLOCK_REWARD = 100000n;
 
@@ -26,12 +27,16 @@ export default function Mine() {
         if ((info?.blockIndex ?? 0) > before || i === 39) break;
       }
       await refreshBalance();
-    } catch {
-      setError('Could not start mining on this node.');
-    } finally {
-      setMining(false);
-    }
-  }
+    } catch (e) {
+          if (e instanceof ApiError && e.needsAuth) {
+            setError('Mining needs an API key. Create one to start mining blocks.');
+          } else {
+            setError('Could not start mining on this node.');
+          }
+        } finally {
+          setMining(false);
+        }
+      }
 
   return (
     <div className="mx-auto max-w-2xl space-y-5 animate-fade-up">
@@ -74,8 +79,8 @@ export default function Mine() {
           <p className="text-sm leading-relaxed text-white/55">
             Mining searches for a hash below the network target — roughly 67 million
             SHA-256 attempts, so a block takes about a minute of CPU on the node. The
-            reward goes to the node&rsquo;s mining key, not to your browser wallet,
-            which is why the demo faucet exists for testing spends.
+                        reward is paid to the node&rsquo;s mining key rather than your browser
+                        wallet, so use the faucet on the API key page to get coins you can spend.
           </p>
         </div>
 
@@ -83,7 +88,13 @@ export default function Mine() {
           <Pickaxe size={16} />
           {mining ? 'Mining in progress…' : 'Mine a block'}
         </button>
-      </Card>
+
+                {error?.includes('API key') && (
+                  <Link to="/account" className="btn-secondary mt-3 w-full">
+                    <KeyRound size={16} /> Create an API key
+                  </Link>
+                )}
+              </Card>
     </div>
   );
 }

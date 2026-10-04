@@ -59,8 +59,11 @@ app.use(function (req, res, next) {
 
 // Expensive endpoints require an API key; read-only chain data stays public.
 app.use(auth.middleware({
-    '/make': { max: 6, windowMs: 60_000 },
-    '/faucet': { max: 3, windowMs: 300_000 },
+    // Mining one block takes a couple of minutes of CPU, so this ceiling only stops a
+    // caller from queueing work faster than the node can complete it.
+    '/make': { max: 30, windowMs: 60_000 },
+    // Sized so the bundled seed script can fund a handful of demo wallets in one run.
+    '/faucet': { max: 10, windowMs: 300_000 },
         // Peers are few and long-lived, so this is generous; the aim is to stop /newPeer
         // being used as an SSRF probe, not to ration legitimate peer additions.
         '/newPeer': { max: 60, windowMs: 600_000 },
@@ -68,6 +71,16 @@ app.use(auth.middleware({
 auth.loadKeys();
 
 let config = JSON.parse(fs.readFileSync('./config.json').toString().replace(/^\uFEFF/, ''));
+
+// The port can be overridden without editing config.json, so a second node (for tests,
+// or a separate chain) can run beside the first instead of colliding on a fixed port.
+if (nodeProcess.env.IITKBUCKS_PORT) {
+    const override = parseInt(nodeProcess.env.IITKBUCKS_PORT, 10);
+    if (!Number.isInteger(override) || override < 1 || override > 65535) {
+        throw new Error(`IITKBUCKS_PORT must be a valid port number, got ${nodeProcess.env.IITKBUCKS_PORT}`);
+    }
+    config.port = override;
+}
 
 // Peers on the same machine are normal when testing locally, but off by default so a
 // deployed node cannot be pointed at internal addresses.
@@ -111,6 +124,12 @@ var ALIAS_CHALLENGE_PREFIX = 'IITKBUCKS-ALIAS:';
 // Aliases are part of chain state, not session state: they map names to public keys
 // that hold real coins, so losing them on restart would orphan funds.
 var ALIAS_STORE = './blocks/aliases.json';
+// Single-slot mining state. The worker searches one header at a time, so `makeBlock`
+// must refuse to queue a second search while one is running; `queuedMining` remembers
+// that a request was deferred so it can be serviced as soon as the current block lands.
+var mining = false;
+var queuedMining = false;
+var pendingBlock = null;
 let worker = new Worker('./worker.js');
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //util functions
@@ -770,6 +789,23 @@ function transactionToBuffer(transaction){
 }
 
 function makeBlock(worker){
+    // The worker mines one block at a time, and each search takes as long as the target
+    // takes to satisfy (about a minute on average, with a long tail). Without this guard
+    // a burst of requests — several faucet payouts, or a client hammering /make — queued
+    // one search per call on the single worker, so the Nth request waited N minutes and
+    // callers legitimately timed out.
+    //
+    // The guard has to sit at the top, before any state is touched: building the block
+    // consumes inputs from unused_outputs and computes fees. Bailing out after that work
+    // would leave the next call verifying the same pending transactions against inputs it
+    // had already spent. Skipped transactions stay in pendingTransactions and are picked up
+    // by the follow-up search scheduled when the in-flight block lands.
+    if (mining) {
+        queuedMining = true;
+            return false;
+    }
+    mining = true;
+
     console.log("inside make block.........");
     var buffer =  Buffer.alloc(0);
     let size = 0;
@@ -818,9 +854,13 @@ function makeBlock(worker){
 
     for (let [key , value] of temparray) 
     {
-        unused_outputs.set(key ,temparray.get(key));
-        delete temparray.get(key);
-    }
+            unused_outputs.set(key ,value);
+            // Map.delete(key), not `delete` on the value. `delete temparray.get(key)`
+            // removed a property from the Output object and left the map entry in
+            // place, so this loop's rollback set grew by one entry per spent input for
+            // the lifetime of the process until it exhausted the heap.
+            temparray.delete(key);
+        }
     let pubKey = fs.readFileSync(config['public-key']);
 
     var out = new Output(fees+ blockReward ,pubKey.length, pubKey );
@@ -845,14 +885,36 @@ function makeBlock(worker){
 
     console.log("block head made **********************")
     console.log(blockhead);
-    worker.postMessage({ header : blockhead});
-    worker.on('message', message => {
-        console.log("Message received: ", message);
-        var blockHead = Buffer.from(message.header);
-        var Block  =Buffer.concat([blockHead,buffer]);
-        postBlock(Block);
-    });
-}
+        pendingBlock = buffer;
+        worker.postMessage({ header : blockhead});
+        // Registered once, for the life of the worker, instead of on every call. `makeBlock`
+        // runs for every mined block, and each `on('message')` stacked another listener onto
+        // the same long-lived worker: after N blocks one worker message invoked N handlers,
+        // each calling postBlock and each incrementing block_index. The chain height then ran
+        // ahead of the blocks actually on disk, and the retained block buffers grew until the
+        // node exhausted the heap and aborted.
+        //
+        // This reads `pendingBlock` rather than closing over `buffer`. A closure would stay
+        // bound to the block body of the call that registered it, so a message for a later
+        // block would have been concatenated onto an earlier block's header.
+        worker.removeAllListeners('message');
+        worker.on('message', message => {
+            var block = pendingBlock;
+            pendingBlock = null;
+            mining = false;
+            if (!block) return;
+            console.log("Message received: ", message);
+            var blockHead = Buffer.from(message.header);
+            postBlock(Buffer.concat([blockHead,block]));
+            // A request that arrived while this block was being searched is honoured now that
+            // the UTXO set has been updated and the pending transactions are free to re-verify.
+            if (queuedMining) {
+                queuedMining = false;
+                makeBlock(worker);
+            }
+        });
+        return true;
+    }
 
 function postBlock(block){
     process(block,block_index);
@@ -941,8 +1003,14 @@ app.use(function (req, res, next) {
 });
 
 app.get('/make',(req,res,next)=>{
-    makeBlock(worker);
-    res.sendStatus(200);
+    // Report whether a search actually started. A caller that polls the height needs to
+    // know if its request was merged into the search already running; returning 200 either
+    // way left the seed script waiting for a block that was never going to be searched for.
+    var started = makeBlock(worker);
+    if (started) {
+        return res.json({ status: 'mining', blockIndex: block_index });
+    }
+    res.json({ status: 'queued', blockIndex: block_index });
 });
 
 app.get('/getunpub',(req, res)=>{

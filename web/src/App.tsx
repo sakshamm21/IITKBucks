@@ -1,8 +1,9 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useWallet } from './lib/useWallet';
 import { useNodeStatus } from './lib/useNodeStatus';
+import { useAuth } from './lib/useAuth';
 import { StatusDot } from './components/ui';
-import { LayoutDashboard, Wallet, Send, Pickaxe, AtSign, Blocks } from 'lucide-react';
+import { LayoutDashboard, Wallet, Send, Pickaxe, AtSign, Blocks, KeyRound } from 'lucide-react';
 import { formatCompact } from './lib/format';
 
 const NAV = [
@@ -12,11 +13,13 @@ const NAV = [
   { to: '/mine', label: 'Mine', icon: Pickaxe },
   { to: '/identity', label: 'Identity', icon: AtSign },
   { to: '/explorer', label: 'Explorer', icon: Blocks },
-];
+    { to: '/account', label: 'API key', icon: KeyRound },
+  ];
 
 export default function App() {
   const { wallet, balance } = useWallet();
   const { live, info } = useNodeStatus();
+  const { apiKey, signOut } = useAuth();
 
   return (
     <div className="min-h-screen">
@@ -41,6 +44,16 @@ export default function App() {
                 {formatCompact(balance)} KBX
               </span>
             )}
+                        <NavLink
+                          to="/account"
+                          className="chip transition-colors hover:border-iris-400/40 hover:text-white"
+                          title={apiKey ? 'API key active' : 'Create an API key'}
+                        >
+                          <KeyRound size={12} />
+                          <span className="hidden sm:inline">
+                            {apiKey ? 'Key active' : 'No key'}
+                          </span>
+                        </NavLink>
           </div>
         </div>
 

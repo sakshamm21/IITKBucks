@@ -51,6 +51,18 @@ async function get(path, headers = {}) {
   return fetch(`${BASE}${path}`, { headers });
 }
 
+/** Access keys gate the expensive endpoints; mint one for tests that need it. */
+async function signup() {
+  const res = await fetch(`${BASE}/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  const body = await res.json();
+  assert.ok(body.apiKey, `signup failed: ${JSON.stringify(body)}`);
+  return body.apiKey;
+}
+
 // ---------------------------------------------------------------- aliases
 
 test('alias claim without an ownership proof is rejected', async () => {
@@ -182,6 +194,51 @@ test('reported height matches the last block that exists', async () => {
     `block ${info.blockIndex} is not mined yet and must not be served`
   );
 });
+
+  // -------------------------------------------------------------- mining
+
+  /**
+   * `makeBlock` used to register a worker listener on every call without removing the
+   * previous one, so a single mined block invoked every handler ever registered — each
+   * calling postBlock and each incrementing the height. The node also queued one search
+   * per /make request on a single worker, so a burst made the Nth caller wait N minutes.
+   *
+   * The observable contract now: a burst of /make requests is answered immediately, at
+   * most one search is started, and any that arrive while a search is already running are
+   * merged into it rather than queued behind it. This deliberately asserts "at most one"
+   * rather than "exactly one" — a search may already be in flight when the burst arrives,
+   * in which case every request is correctly reported as queued.
+   */
+  test('concurrent /make requests do not each start a search', async () => {
+    const key = await signup();
+    const auth = { Authorization: `Bearer ${key}` };
+
+    const before = await (await get('/getNodeInfo')).json();
+    const responses = await Promise.all([
+      get('/make', auth),
+      get('/make', auth),
+      get('/make', auth),
+    ]);
+
+    const statuses = [];
+    for (const res of responses) {
+      assert.strictEqual(res.status, 200, '/make must answer rather than queue behind the search');
+      const body = await res.json();
+      assert.ok(
+        body.status === 'mining' || body.status === 'queued',
+        `unexpected status ${body.status}`
+      );
+      statuses.push(body.status);
+    }
+
+    // The regression was one search per request; more than one would again mean N callers
+    // waiting N blocks. Zero is legitimate when a search was already running.
+    const started = statuses.filter((s) => s === 'mining').length;
+    assert.ok(started <= 1, `at most one search should start, saw ${started}`);
+
+    const after = await (await get('/getNodeInfo')).json();
+    assert.strictEqual(after.blockIndex, before.blockIndex, 'height must not jump on request alone');
+  });
 
 test('cors is not a wildcard when an allowlist is configured', async () => {
   const res = await get('/getNodeInfo', { headers: { Origin: 'https://evil.example' } });

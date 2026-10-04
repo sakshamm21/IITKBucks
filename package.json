@@ -7,7 +7,8 @@
     "start": "node main.js",
     "dev": "node dev.js",
     "test": "node --test \"test/*.test.js\"",
-    "build:web": "npm --prefix web run build",
+        "seed": "node scripts/seed.js",
+        "build:web": "npm --prefix web run build",
     "install:web": "npm --prefix web install"
   },
   "keywords": [

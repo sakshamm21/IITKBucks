@@ -16,6 +16,21 @@ test.pem
 blocks/*.dat
 blocks/aliases.json
 blocks/aliases.json.tmp
+blocks/apikeys.json
+blocks/apikeys.json.tmp
+blocks/faucet.json
+blocks/faucet.json.tmp
+
+# Seed script output
+seed.log
+seed.log.err
+seedrun.txt
+t3100.log
+t3100.err
+t3300.log
+t3300.err
+faucet.log
+faucet.log.err
 
 # Local node logs
 node.log

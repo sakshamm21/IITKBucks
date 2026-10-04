@@ -69,8 +69,10 @@ function keyCount() {
 }
 
 /**
- * Constant-time verification. A naive comparison would leak the hash prefix
- * through response timing, which is enough to reconstruct a token offline.
+ * Look a token up by its digest. The map is keyed by the full SHA-256 hash, so a
+ * lookup is a miss unless every byte of the digest matches — there is no
+ * prefix to leak incrementally and no shorter secret to guess one character at a
+ * time. `crypto.timingSafeEqual` would add nothing here.
  */
 function verifyToken(token) {
   if (typeof token !== 'string' || token.length < 16) return null;
