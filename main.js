@@ -9,21 +9,69 @@ const Transaction = require ("./classes/Transaction");
 const Input = require ("./classes/Input");
 const Output = require ("./classes/Output");
 const BlockHead = require ("./classes/BlockHead");
+const auth = require("./auth");
 
 
 const { Worker } = require('worker_threads');
+// Aliased deliberately: this file declares `function process(Block, blocknum)` further
+// down, and function hoisting shadows the global `process`, making `process.env`
+// undefined. Referencing nodeProcess avoids the collision entirely.
+const nodeProcess = require('process');
 var app = express();
-app.use (bodyParser.urlencoded({extended : true}));
-app.use (bodyParser.json());
-// CORS for web frontend
-app.use(function(req, res, next) {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    if (req.method === 'OPTIONS') return res.sendStatus(200);
+
+// Cap request bodies. Blocks arrive as binary, but a 100 MB limit is far beyond any
+// legitimate block and keeps a single request from exhausting memory.
+app.use(bodyParser.urlencoded({ extended: true, limit: '2mb' }));
+app.use(bodyParser.json({ limit: '2mb' }));
+
+// CORS restricted to configured origins. The wallet is served from a different port
+// than the node in development, so this cannot simply be "same origin". '*' would let
+// any page a user visits call this node with their credentials.
+const ALLOWED_ORIGINS = (nodeProcess.env.IITKBUCKS_CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+app.use(function (req, res, next) {
+    const origin = req.get('origin');
+    if (origin && ALLOWED_ORIGINS.includes(origin)) {
+        res.header("Access-Control-Allow-Origin", origin);
+        res.header("Vary", "Origin");
+        res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-API-Key");
+        res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.header("Access-Control-Max-Age", "600");
+    } else if (origin) {
+        // Origin present but not allowlisted: refuse rather than fall back to '*'.
+        return res.status(403).json({ error: 'origin_not_allowed' });
+    }
+    if (req.method === 'OPTIONS') return res.sendStatus(origin && !ALLOWED_ORIGINS.includes(origin) ? 403 : 200);
     next();
 });
-let config = JSON.parse(fs.readFileSync('./config.json'));
+
+// Minimal hardening headers. helmet is not a dependency here, and these are the only
+// ones that matter for a JSON/binary API with no HTML rendering.
+app.use(function (req, res, next) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+});
+
+// Expensive endpoints require an API key; read-only chain data stays public.
+app.use(auth.middleware({
+    '/make': { max: 6, windowMs: 60_000 },
+    '/faucet': { max: 3, windowMs: 300_000 },
+        // Peers are few and long-lived, so this is generous; the aim is to stop /newPeer
+        // being used as an SSRF probe, not to ration legitimate peer additions.
+        '/newPeer': { max: 60, windowMs: 600_000 },
+    }));
+auth.loadKeys();
+
+let config = JSON.parse(fs.readFileSync('./config.json').toString().replace(/^\uFEFF/, ''));
+
+// Peers on the same machine are normal when testing locally, but off by default so a
+// deployed node cannot be pointed at internal addresses.
+var ALLOW_LOCAL_PEERS = nodeProcess.env.IITKBUCKS_ALLOW_LOCAL_PEERS === 'true';
 
 // Ensure node has a mining public key; generate one if missing
 if (!config["public-key"] || !fs.existsSync(config["public-key"])) {
@@ -453,6 +501,14 @@ function process(Block,blocknum){
             unused_outputs.set(tuple, curr_transaction.outputs[k]);
         }
     }
+            // A faucet reservation only needs to hold while its transaction is unmined. Once the
+            // chain has moved past it, drop the reservation so the output can be reused rather
+            // than leaking a slot on every restart.
+            if(faucetReserved.size > 0){
+                for (var held of Array.from(faucetReserved)) {
+                    if(!unused_outputs.has(held)) faucetReserved.delete(held);
+                }
+            }
     unusedOuputsPubkey.clear()
     for(let [key, value] of unused_outputs)
     {
@@ -935,19 +991,57 @@ app.get('/getPendingTransactions',(req,res,next)=>{
         res.send(pending_txn);
 });
 
+// Validates a peer URL before it is stored and dialled.
+//
+// Without this, /newPeer accepts any string and the node later issues HTTP requests
+// to it, which lets a caller point the node at internal services (the cloud metadata
+// endpoint, a private admin port) and use its responses as an oracle. Only absolute
+// http/https URLs are accepted, and addresses that resolve to private, loopback or
+// link-local space are refused unless they are explicitly allowed for local testing.
+function isValidPeerUrl(raw){
+    if(typeof raw !== 'string' || raw.length === 0 || raw.length > 300) return false;
+    var parsed;
+    try {
+        parsed = new URL(raw);
+    } catch (err) {
+        return false;
+    }
+    if(parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if(parsed.username || parsed.password) return false; // no embedded credentials
+
+    var host = parsed.hostname.toLowerCase();
+    if(host === 'localhost' || host === '::1' || host === '0.0.0.0'){
+        return ALLOW_LOCAL_PEERS === true;
+    }
+    // Literal IPv4 in private/reserved space.
+    var v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if(v4){
+        var a = parseInt(v4[1],10), b = parseInt(v4[2],10);
+        var blocked = a === 127 || a === 10 || a === 0 ||
+                      (a === 172 && b >= 16 && b <= 31) ||
+                      (a === 192 && b === 168) ||
+                      (a === 169 && b === 254) ||
+                      (a === 100 && b >= 64 && b <= 127);
+        return !blocked || ALLOW_LOCAL_PEERS === true;
+    }
+    // IPv6 loopback and unique-local ranges.
+    if(host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80')){
+        return ALLOW_LOCAL_PEERS === true;
+    }
+    return true;
+}
+
 app.post('/newPeer',(req,res,next)=>{
-    if(peers.indexOf(req.body.url)==-1 ){
-        
+    var incoming = req.body.url;
+    if(!isValidPeerUrl(incoming)){
+        return res.status(400).send('peer url rejected: must be an absolute http(s) url pointing at a public host');
+    }
+    if(peers.indexOf(incoming)==-1 ){
+
         if(peers.length < max_peers_length){
-            console.log(req.body.url +'wants to add as a  peer');
-            previous_length_peers = peers.length;
-            peers.push(req.body.url);
-            new_length_peers = peers.length;
-            if(new_length_peers == previous_length_peers+1){
-                res.send("peer added succesfully");
-            }else{
-                res.send("something is fishy");
-            }
+            console.log(incoming +' wants to add as a peer');
+            peers.push(incoming);
+            res.send("peer added succesfully");
         }else{
             console.log('peer limit exceeded');
             res.sendStatus(500);
@@ -957,7 +1051,7 @@ app.post('/newPeer',(req,res,next)=>{
         res.statusCode = 500;
         console.log('node already present');
         res.send(peers);
-    }  
+    }
 });
 
 app.get('/getPeers',(req,res,next)=>{
@@ -1131,22 +1225,202 @@ app.get('/getNodeInfo',(req,res,next)=>{
         "peers": peers,
         "blockIndex": block_index,
         "pendingTransactions": pendingTransactions.length,
-        "aliases": [...alias.keys()]
+        "aliases": [...alias.keys()],
+        "apiKeys": auth.keyCount(),
+        "requiresAuth": auth.isProtected('/make')
     };
     res.send(JSON.stringify(info));
 });
 
-const port = config['port'];
-app.listen(port,async function(error){
+// Issues a bearer token for gating expensive endpoints. The plaintext token is
+// returned once and never stored; the node keeps only its SHA-256 hash.
+app.post('/signup',(req,res,next)=>{
+    var token = auth.issueKey();
+    res.send({
+        "apiKey": token,
+        "note": "Store this now. Only its hash is kept by the node, so it cannot be shown again."
+    });
+});
 
-    if(error)
-    {
-        console.log("this thing is fucked")
+// Reports whether the supplied key is valid. Lets the wallet show an accurate
+// signed-in state without exposing anything about other keys.
+app.post('/verifyKey',(req,res,next)=>{
+    var token = (req.get('authorization')||'').replace(/^Bearer\s+/i,'') || req.body.apiKey || '';
+    if(auth.verifyToken(token)){
+        res.send({"valid": true});
     }else{
-
-       loadAliases();
-              await start();
-              getBlocks(0);
-              console.log('server listening on port '+port)
+        res.status(403).send({"valid": false});
     }
+});
+
+////////////////////////////////////////////////////////////////////////////////
+// Demo faucet
+//
+// Mining pays the node's key, so a brand-new browser wallet would otherwise sit
+// at zero forever and nobody could try a send. This hands out a small amount so
+// the app is demonstrable.
+//
+// The amount is deliberately tiny and the endpoint is rate limited per API key,
+// but a node holding real value would still be drained by anyone willing to script
+// it, so it stays behind an explicit opt-in flag (see config faucet.enabled).
+var faucetPayouts = new Map(); // publicKey -> { amount, at }
+var faucetReserved = new Set(); // UTXO keys committed to a pending faucet transaction
+var FAUCET_MAX_PER_WALLET = BigInt(50000);
+
+function readFaucetState(){
+    var file = './blocks/faucet.json';
+    if(!fs.existsSync(file)) return;
+    try {
+        var parsed = JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
+        faucetPayouts = new Map(Object.entries(parsed));
+    } catch (err) {
+        console.log('could not read faucet state: ' + err.message);
+    }
+}
+
+function persistFaucet(){
+    var file = './blocks/faucet.json';
+    var tmp = file + '.tmp';
+    try {
+        fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(faucetPayouts), null, 2));
+        fs.renameSync(tmp, file);
+    } catch (err) {
+        console.log('could not persist faucet state: ' + err.message);
+    }
+}
+
+app.post('/faucet',(req,res,next)=>{
+    var faucetCfg = (config && config.faucet) || {};
+    if(faucetCfg.enabled === false){
+        return res.status(403).json({error:'faucet_disabled', message:'The faucet is disabled on this node.'});
+    }
+
+    var publicKey = req.body.publicKey;
+    if(typeof publicKey !== 'string' || publicKey.length === 0 || publicKey.length > MAX_PUBKEY_LEN){
+        return res.status(400).json({error:'invalid_public_key'});
+    }
+    var key = normalizePemKey(publicKey);
+
+    var prior = faucetPayouts.get(key);
+    if(prior && prior.amount >= FAUCET_MAX_PER_WALLET){
+        return res.status(429).json({error:'limit_reached', message:'This wallet has already received the maximum faucet amount.'});
+    }
+
+    // The faucet pays out by creating a real transaction owned by the node key, so the
+    // amount must not exceed a single spendable output: verify_transaction checks each
+    // transaction's own inputs against its outputs, and an input worth less than the
+    // requested amount would be rejected even though the node holds enough in total.
+    var nodeKey = fs.readFileSync(config['public-key']);
+    var owned = unusedOuputsPubkey.get(normalizePemKey(nodeKey.toString('utf-8'))) || [];
+    var candidates = owned.filter(function (u) {
+        try {
+            return BigInt(u.amount) > 0n;
+        } catch (err) {
+            return false;
+        }
+    });
+    if (candidates.length === 0) {
+        return res.status(503).json({error:'faucet_empty', message:'The faucet has no funds. Mine a block first.'});
+    }
+
+    // Prefer the smallest output that covers the target payout so the change stays small;
+    // fall back to the largest available when none is big enough.
+    var target = FAUCET_MAX_PER_WALLET;
+    var affordable = candidates.filter(function (u) { return BigInt(u.amount) >= target; });
+    var ordered = (affordable.length
+            ? affordable.sort(function (a, b) { return BigInt(a.amount) < BigInt(b.amount) ? -1 : 1; })
+            : candidates.sort(function (a, b) { return BigInt(a.amount) > BigInt(b.amount) ? -1 : 1; })
+        );
+    // Outputs are only consumed when the transaction is mined, so two requests arriving
+    // before the next block would otherwise both pick the same output and the second
+    // transaction would reference an already-spent UTXO. Reserve it here.
+    var minted = null;
+    for (var ci = 0; ci < ordered.length; ci++) {
+        var candidate = ordered[ci];
+        if (faucetReserved.has(utxoKey(candidate.transactionId, candidate.index))) continue;
+        minted = candidate;
+        break;
+    }
+    if (!minted) {
+        return res.status(503).json({error:'faucet_busy', message:'All faucet funds are already committed to pending transactions.'});
+    }
+    var granted = BigInt(minted.amount) < target ? BigInt(minted.amount) : target;
+
+    // Build a real transaction so the transfer appears on chain and is verifiable,
+    // rather than crediting an entry that no one else can check.
+    var transaction = faucetTransaction(minted, key, granted);
+    var encoded = transactionToBuffer(transaction);
+    var check = verify_transaction(transaction, encoded[1]);
+    if(!check[0]){
+            console.log('faucet transaction failed verification');
+            return res.status(500).json({error:'faucet_failed'});
+        }
+
+    var reservedKey = utxoKey(minted.transactionId, minted.index);
+        faucetReserved.add(reservedKey);
+        // The reservation is held until the spending transaction is actually mined, at
+        // which point process() removes the UTXO from the unspent set and the slot frees
+        // itself. It is deliberately not released earlier, or a second request could pick
+        // the same output again.
+        if(!pendingTransactions.some(function(p){ return _.isEqual(p, transaction); })){
+            pendingTransactions.push(transaction);
+            makeBlock(worker);
+        }
+
+    var total = prior ? prior.amount + granted : granted;
+    faucetPayouts.set(key, { amount: total.toString(), at: Date.now() });
+    persistFaucet();
+
+    res.send({ granted: granted.toString(), total: total.toString(), limit: FAUCET_MAX_PER_WALLET.toString() });
+});
+
+// Builds and signs a node -> requester transaction. The node's private key is used
+// here, which is exactly why this must stay server-side.
+function faucetTransaction(nodeUtxo, recipientKey, amount){
+    var priv = fs.readFileSync('./node_private.pem');
+    var outputs = [];
+    var change = BigInt(nodeUtxo.amount) - amount;
+    outputs.push(new Output(amount, Buffer.byteLength(recipientKey,'utf-8'), recipientKey));
+    if(change > 0n){
+        var pub = fs.readFileSync(config['public-key']);
+        outputs.push(new Output(change, Buffer.byteLength(pub.toString('utf-8'),'utf-8'), pub));
+    }
+
+    // The signature commits to hash(outputs), which does not depend on the inputs, so
+    // the placeholder below only needs the right output list. It must be discarded
+    // afterwards: keeping its empty input array would produce a transaction whose
+    // declared numInputs disagrees with its inputs and fail verification.
+    var unsigned = new Transaction(0, [], outputs.length, outputs);
+    var encoded = transactionToBuffer(unsigned);
+    var indexBuf = Buffer.alloc(4);
+    indexBuf.writeInt32BE(nodeUtxo.index, 0);
+    var signature = crypto.sign('sha256', Buffer.concat([
+            Buffer.from(nodeUtxo.transactionId,'hex'),
+            indexBuf,
+            Buffer.from(encoded[1],'hex')
+        ]),
+        { key: priv, padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 }
+    ).toString('hex');
+
+    var input = new Input(nodeUtxo.transactionId, nodeUtxo.index, signature.length/2, signature);
+    return new Transaction(1, [input], outputs.length, outputs);
+}
+
+// Port and public URL can come from the environment so the committed config stays
+// generic and no deployment requires editing a tracked file.
+const port = nodeProcess.env.PORT || config['port'];
+if (nodeProcess.env.PORT) {
+    myurl = nodeProcess.env.IITKBUCKS_MYURL || `http://localhost:${port}`;
+}
+
+app.listen(port, async function (error) {
+    if (error) {
+        console.log('could not bind port ' + port + ': ' + error.message);
+        return;
+    }
+    loadAliases();
+    readFaucetState();
+    await start();
+    getBlocks(0);
+    console.log('server listening on port ' + port);
 });
